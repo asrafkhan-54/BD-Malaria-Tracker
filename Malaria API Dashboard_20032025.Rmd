@@ -1,0 +1,2472 @@
+---
+title: "Malaria API Tracker, Bangladesh"
+runtime: shiny
+output:
+  flexdashboard::flex_dashboard:
+    vertical_layout: fill
+    overflow: auto
+    smooth_scroll: yes
+    theme: yeti
+resource_files:
+- global.R
+---
+
+```{css}
+.dataTables_scrollBody {
+    max-height: 100% !important;
+}
+
+.rpivotTable{ overflow : scroll; }
+
+.panel-auth {
+  position: fixed;
+  top:0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background-color: #FFF;
+  opacity: 1;
+  z-index: 99997;
+  overflow-x: hidden;
+  overflow-y: scroll;
+}
+
+```
+
+```{r global, include=FALSE, warning=FALSE}
+library(shinyscreenshot)
+library(flexdashboard)
+library(leaflet.extras)
+library(leaflet.extras2)
+library(shinyWidgets)
+library(htmlwidgets)
+library(fontawesome)
+library(htmltools)
+library(leaflet)
+library(plotly)
+library(shiny)
+library(ggplot2)
+library(rpivotTable)
+library(leaflegend)
+library(RcppRoll)
+library(shinymanager)
+library(leafsync)
+
+credentials <- data.frame(
+  user = c("MAT","admin","user"),
+  password = c("mat2022","admin","user"),
+  stringsAsFactors = FALSE
+)
+
+```
+
+# Annual Parasite Incidence Map {data-navmenu="Map"}
+
+## Inputs {.sidebar}
+
+```{r}
+# DIVISION
+renderUI({
+    pickerInput(inputId  = "div",
+                label    = "Division:",
+                choices  = as.character(unique(sort(shp$division.x))),
+                selected = shp$division.x,
+                options  = list(`actions-box` = TRUE),
+                multiple = T)
+  })
+
+# DISTRICT
+renderUI({
+   data_available = shp[shp$division.x %in% input$div, "district"]
+    pickerInput(inputId  = "dist",
+                label    = "District",
+                choices  = as.character(unique(sort(data_available$district))),
+                selected = data_available$district,
+                options  = list(`actions-box` = TRUE,`live-search` = TRUE,size = 10),
+                multiple = T)
+  })
+
+# UPAZILA
+renderUI({
+    data_available = shp[shp$division.x %in% input$div & shp$district %in% input$dist, "upazila"]
+    pickerInput(inputId  = "upa",
+                label    = "Upazila",
+                choices  = as.character(unique(sort(data_available$upazila))),
+                selected = data_available$upazila,
+                options  = list(`actions-box` = TRUE,`live-search` = TRUE,size = 10),
+                multiple = T)
+    })
+# YEAR
+renderUI({
+    data_available = shp[shp$division.x %in% input$div & shp$district %in% input$dist & shp$upazila %in% input$upa, "Year"]
+
+    selectInput(inputId  = "year",
+                label    = "Year",
+                choices  =  sort(unique(data_available$Year)),
+                selected = "2025")
+  })
+
+filteredData <- reactive({
+    shp[shp$division.x %in% input$div & shp$district %in% input$dist & 
+        shp$upazila %in% input$upa & shp$Year %in% input$year,] })
+
+api_map <- reactive ({
+  filteredData()[!st_is_empty(filteredData()),,drop = FALSE]  
+
+})
+
+sadar <- reactive ({
+  filteredData()[st_is_empty(filteredData()),,drop = FALSE]  
+
+})
+
+
+```
+
+## Column {.tabset data-width="1300"}
+
+### Annual Parasite Incidence (API)
+
+```{r}
+output$mapapi <- renderLeaflet({
+labels <- c("0.00", "<1.00", "1.00-5.00", "5.01-10.00", "10.01-100", ">100")
+myybins <- c(0.00,0.01,1.00,5.00,10.00,100.00,Inf)
+mypalette <- colorBin(palette= c("#e1e1e1", "#ffffbe","#ffaa01", "#e71514","#a80000","#050404"),
+                       domain = shp$api_total, na.color="transparent", bins=myybins)
+  
+  
+ mapapi <- leaflet() %>%
+    addProviderTiles("CartoDB.Positron") %>%
+    addResetMapButton() %>%
+    addEasyButton(easyButton(
+    icon = "fa-crosshairs", title = "Locate Me",
+    onClick = JS("function(btn, map){ map.locate({setView: true});}"))) %>%
+    addFullscreenControl()
+
+mapapi <- mapapi %>%
+    addPolygons( data=api_map()
+                 ,fillColor = ~mypalette(api_total)
+                 ,weight = 0.5
+                 ,opacity = 1
+                 ,color = "gray"
+                 ,fillOpacity = 1
+                 ,popup = paste0("<b>Division: </b>"
+                                 , api_map()$division.x, "<br>"
+                                 ,"<b>District: </b>"
+                                 , api_map()$district, "<br>"
+                                 ,"<b>Upazila/Thana: </b>"
+                                 , api_map()$upazila, "<br>"
+                                 ,"<b>Year: </b>"
+                                 , api_map()$Year, "<br>"
+                                 ,"<b>API Overall API: </b>"
+                                 , api_map()$api_total, "<br>" )
+                 )%>%
+
+    addLegend(pal = mypalette, values = api_map()$api_total,title = "Annual Parasite <br> Index (API)", opacity = 1
+               ,labFormat = function(type, cuts, p) {  
+                                                  paste0(labels)
+                              })
+
+})
+
+leafletOutput("mapapi") 
+
+
+absolutePanel( fixed = TRUE
+                , bottom = 20
+                , left = 270
+                , actionButton("apitotal", " ", icon = icon("print")))
+
+observeEvent(input$apitotal, {
+          screenshot( filename = "annual parasite index map",
+            id = "mapapi")
+        })
+
+
+```
+
+### API (<em>P.falciparum</em>)
+
+```{r}
+
+output$mappf <- renderLeaflet({
+labels_pf <- c("0.00", "<1.00", "1.00-5.00", "5.01-10.00", "10.01-100", ">100")
+myybins_pf <- c(0.00,0.01,1.00,5.00,10.00,100.00,Inf)
+mypalette_pf <- colorBin( palette= c("#e1e1e1", "#ffffbe","#ffaa01", "#e71514","#a80000","#050404"),
+                          domain = shp$api_pf, na.color="transparent", bins=myybins_pf)
+
+  map <- leaflet() %>%
+    addProviderTiles("CartoDB.Positron") %>%
+    addResetMapButton() %>%
+    addFullscreenControl() %>%
+    addEasyButton(easyButton(
+    icon = "fa-crosshairs", title = "Locate Me",
+    onClick = JS("function(btn, map){ map.locate({setView: true});}"))) 
+
+  map <- map %>%
+    addPolygons(  data=api_map()
+                 ,fillColor = ~mypalette_pf(api_pf)
+                 ,weight = 0.5
+                 ,opacity = 1
+                 ,color = "gray"
+                 ,fillOpacity = 1
+                 ,popup = paste0("<b>Division: </b>"
+                                 , api_map()$division.x, "<br>"
+                                 ,"<b>District: </b>"
+                                 , api_map()$district, "<br>"
+                                 ,"<b>Upazila/Thana: </b>"
+                                 , api_map()$upazila, "<br>"
+                                 ,"<b>Year: </b>"
+                                 , api_map()$Year, "<br>"
+                                 ,"<b>API pf: </b>"
+                                 , api_map()$api_pf, "<br>"
+                                 )
+                 ) %>%
+    addLegend(pal = mypalette_pf, values = api_map()$api_pf,title = "API (<em>P.falciparum</em>)", opacity = 1
+              ,labFormat = function(type, cuts, p) {  #
+                                                  paste0(labels_pf)
+                             })
+
+
+
+})
+
+leafletOutput("mappf")
+
+
+absolutePanel( fixed = TRUE
+                , bottom = 20
+                , left = 270
+                , actionButton("go", " ", icon = icon("print")))
+
+observeEvent(input$go, {
+          screenshot( filename = "Plasmodium falciparum map",
+            id = "mappf")
+        })
+
+
+```
+
+### API (<em>P.vivax</em>)
+
+```{r}
+output$mappv <- renderLeaflet({
+labels_pv <- c("0.00", "<1.00", "1.00-5.00", "5.01-10.00", "10.01-100", ">100")
+myybins_pv <- c(0.00,0.01,1.00,5.00,10.00,100.00,Inf)
+mypalette_pv <- colorBin( palette= c("#e1e1e1", "#ffffbe","#ffaa01", "#e71514","#a80000","#050404"),
+                          domain = shp$api_pv, na.color="transparent", bins=myybins_pv)
+
+  mappv <- leaflet() %>%
+    addProviderTiles("CartoDB.Positron") %>%
+    addResetMapButton() %>%
+    addFullscreenControl()  %>%
+    addEasyButton(easyButton(
+    icon = "fa-crosshairs", title = "Locate Me",
+    onClick = JS("function(btn, map){ map.locate({setView: true});}"))) 
+
+  mappv <- mappv %>%
+    addPolygons(  data=api_map()
+                 ,fillColor = ~mypalette_pv(api_pv)
+                 ,weight = 0.5
+                 ,opacity = 1
+                 ,color = "gray"
+                 ,fillOpacity = 1
+                 ,popup = paste0("<b>Division: </b>"
+                                 , api_map()$division.x, "<br>"
+                                 ,"<b>District: </b>"
+                                 , api_map()$district, "<br>"
+                                 ,"<b>Upazila/Thana: </b>"
+                                 , api_map()$upazila, "<br>"
+                                 ,"<b>Year: </b>"
+                                 , api_map()$Year, "<br>"
+                                 ,"<b>API pv: </b>"
+                                 , api_map()$api_pv, "<br>" )
+                 ) %>%
+    addLegend(pal = mypalette_pv, values = api_map()$api_pv,title = "API (<em>P.vivax</em>)", opacity = 1
+              ,labFormat = function(type, cuts, p) {  
+                                                  paste0(labels_pv)
+                             })
+
+
+
+})
+
+leafletOutput("mappv")
+
+
+absolutePanel( fixed = TRUE
+                , bottom = 20
+                , left = 270
+                , actionButton("abpv", " ", icon = icon("print")))
+
+observeEvent(input$abpv, {
+          screenshot( filename = "plasmodium vivax map",
+            id = "mappv")
+        })
+
+```
+
+## Column
+
+```{r}
+fluidRow(
+  column(12, style="background-color:#008cba", align = "center",
+                                 helpText("Upazila Malaria Cases", style = "color: #FFFFFF;font-size: 120%;"))
+)
+fluidRow(
+    column(6, style='border: 4px double white;',
+           align="center",div(valueBoxOutput("val_total"),style="color:white;font-size: 60%;"),style="background-color:#1e90ff;"),
+    column(6, style='border: 4px double white;',
+           align="center",div(valueBoxOutput("val_death"),style="color:white;font-size: 60%;"),style="background-color:#1e90ff;"))
+  fluidRow(
+    column(4,style='border: 4px double white;',
+
+           align="center",div(valueBoxOutput("val_pf"),style="color:white;font-size: 60%;") 
+           ,style="background-color:#044687;"),
+    column(4,style='border: 4px double white;',
+
+           align="center",div(valueBoxOutput("val_pv"),style="color:white;font-size: 60%;"),style="background-color:#044687;"),
+    column(4,style='border: 4px double white;',
+
+           align="center",div(valueBoxOutput("val_mixed"),style="color:white;font-size: 60%;"),style="background-color:#044687;")
+  )
+
+
+
+
+output$val_total <-renderValueBox({
+  pipv_valuebox <- sum(api_map()$CASEE,na.rm = TRUE) %>%
+    shinydashboard::valueBox(.,
+      subtitle = tags$p("Total",style = "font-weight: bold;"),
+      color = "navy", width = NULL
+    )
+})
+
+output$val_death <- renderValueBox({
+  pipv_valuebox2 <- sum(api_map()$DEATH,na.rm = TRUE) %>%
+  shinydashboard::valueBox(.,
+    subtitle = tags$p("Death",style = "font-weight: bold;"),
+    color = "navy", width = NULL
+    )
+})
+#
+output$val_pf <- renderValueBox({
+  pipv_valuebox3 <- sum(api_map()$PF,na.rm = TRUE) %>%
+  shinydashboard::valueBox(.,
+      subtitle =tags$p("PF",style = "font-weight: bold;"),
+    color = "navy", width = NULL
+    )
+})
+output$val_pv <- renderValueBox({
+  pipv_valuebox4 <- sum(api_map()$PV,na.rm = TRUE) %>%
+    shinydashboard::valueBox(.,
+      subtitle =tags$p("PV",style = "font-weight: bold;"),
+    color = "navy", width = NULL
+    )
+})
+output$val_mixed <- renderValueBox({
+  pipv_valuebox5 <- sum(api_map()$MIXED,na.rm = TRUE) %>%
+  shinydashboard::valueBox(.,
+      subtitle = tags$p("MIXED",style = "font-weight: bold;"),
+    color = "navy", width = NULL
+    )
+})
+
+
+```
+
+```{r}
+fluidRow(
+  column(12,style="background-color:#008cba",align = "center",
+                                 helpText("Other Malaria Cases", style = "color: #FFFFFF;font-size: 120%;"))
+)
+
+fluidRow(
+    column(6, style='border: 4px double white;',
+           align="center",div(valueBoxOutput("val_total2"),style="color:white;font-size: 60%;"),style="background-color:#1e90ff;"),
+    column(6, style='border: 4px double white;',
+           align="center",div(valueBoxOutput("val_death2"),style="color:white;font-size: 60%;"),style="background-color:#1e90ff;"))
+  fluidRow(
+    column(4,style='border: 4px double white;',
+
+           align="center",div(valueBoxOutput("val_pf2"),style="color:white;font-size: 60%;") 
+           ,style="background-color:#044687;"),
+    column(4,style='border: 4px double white;',
+
+           align="center",div(valueBoxOutput("val_pv2"),style="color:white;font-size: 60%;"),style="background-color:#044687;"),
+    column(4,style='border: 4px double white;',
+
+           align="center",div(valueBoxOutput("val_mixed2"),style="color:white;font-size: 60%;"),style="background-color:#044687;")
+  )
+
+
+
+
+output$val_total2 <-renderValueBox({
+  pipv_valuebox <- sum(sadar()$CASEE,na.rm = TRUE) %>%
+    shinydashboard::valueBox(.,
+      subtitle = tags$p("Total",style = "font-weight: bold;"),
+      color = "navy", width = NULL
+    )
+})
+
+output$val_death2 <- renderValueBox({
+  pipv_valuebox2 <- sum(sadar()$DEATH,na.rm = TRUE) %>%
+  shinydashboard::valueBox(.,
+    subtitle = tags$p("Death",style = "font-weight: bold;"),
+    color = "navy", width = NULL
+    )
+})
+#
+output$val_pf2 <- renderValueBox({
+  pipv_valuebox3 <- sum(sadar()$PF,na.rm = TRUE) %>%
+  shinydashboard::valueBox(.,
+      subtitle =tags$p("PF",style = "font-weight: bold;"),
+    color = "navy", width = NULL
+    )
+})
+output$val_pv2 <- renderValueBox({
+  pipv_valuebox4 <- sum(sadar()$PV,na.rm = TRUE) %>%
+    shinydashboard::valueBox(.,
+      subtitle = tags$p("PV",style = "font-weight: bold;"),
+    color = "navy", width = NULL
+    )
+})
+output$val_mixed2 <- renderValueBox({
+  pipv_valuebox5 <- sum(sadar()$MIXED,na.rm = TRUE) %>%
+  shinydashboard::valueBox(.,
+      subtitle =tags$p("MIXED",style = "font-weight: bold;"),
+    color = "navy", width = NULL
+    )
+})
+
+```
+
+```{r}
+
+fluidRow(
+  column(12,style="background-color:#008cba", align = "center",
+                                helpText("Total Malaria Cases", style = "color: #FFFFFF;font-size: 120%;"))
+)
+
+fluidRow(
+    column(6, style='border: 4px double white;',
+           align="center",div(valueBoxOutput("val_total3"),style="color:white;font-size: 60%;"),style="background-color:#1e90ff;"),
+    column(6, style='border: 4px double white;',
+           align="center",div(valueBoxOutput("val_death3"),style="color:white;font-size: 60%;"),style="background-color:#1e90ff;"))
+  fluidRow(
+    column(4,style='border: 4px double white;',
+
+           align="center",div(valueBoxOutput("val_pf3"),style="color:white;font-size: 60%;") 
+           ,style="background-color:#044687;"),
+    column(4,style='border: 4px double white;',
+
+           align="center",div(valueBoxOutput("val_pv3"),style="color:white;font-size: 60%;"),style="background-color:#044687;"),
+    column(4,style='border: 4px double white;',
+
+           align="center",div(valueBoxOutput("val_mixed3"),style="color:white;font-size: 60%;"),style="background-color:#044687;")
+  )
+
+
+
+
+output$val_total3 <-renderValueBox({
+  pipv_valuebox <- sum(filteredData()$CASEE,na.rm = TRUE) %>%
+    shinydashboard::valueBox(.,
+      subtitle = tags$p("Total",style = "font-weight: bold;"),
+      color = "navy", width = NULL
+    )
+})
+
+output$val_death3 <- renderValueBox({
+  pipv_valuebox2 <- sum(filteredData()$DEATH,na.rm = TRUE) %>%
+  shinydashboard::valueBox(.,
+    subtitle = tags$p("Death",style = "font-weight: bold;"),
+    color = "navy", width = NULL
+    )
+})
+#
+output$val_pf3 <- renderValueBox({
+  pipv_valuebox3 <- sum(filteredData()$PF,na.rm = TRUE) %>%
+  shinydashboard::valueBox(.,
+      subtitle =tags$p("PF",style = "font-weight: bold;"),
+    color = "navy", width = NULL
+    )
+})
+output$val_pv3 <- renderValueBox({
+  pipv_valuebox4 <- sum(filteredData()$PV,na.rm = TRUE) %>%
+    shinydashboard::valueBox(.,
+      subtitle = tags$p("PV",style = "font-weight: bold;"),
+      color = "navy", width = NULL
+    )
+})
+output$val_mixed3 <- renderValueBox({
+  pipv_valuebox5 <- sum(filteredData()$MIXED,na.rm = TRUE) %>%
+  shinydashboard::valueBox(.,
+      subtitle = tags$p("MIXED",style = "font-weight: bold;"),
+    color = "navy", width = NULL
+    )
+})
+
+```
+
+# Yearly API Map {data-orientation="rows" data-navmenu="Map"}
+
+## Inputs {.sidebar}
+
+```{r}
+labels <- c("0.00", "<1.00", "1.00-5.00", "5.01-10.00", "10.01-100", ">100")  
+myybins <- c(0.00, 0.01, 1.00, 5.00, 10.00, 100.00, Inf)  
+mypalette <- colorBin(
+  palette = c("#e1e1e1", "#ffffbe", "#ffaa01", "#e71514", "#a80000", "#050404"),
+  domain = shp$api_total, 
+  na.color = "transparent", 
+  bins = myybins
+)
+
+# DIVISION
+renderUI({
+    pickerInput(inputId  = "year_div",
+                label    = "Division:",
+                choices  = as.character(unique(sort(map.shp$division.x))),
+                selected = "Chittagong",
+                options  = list(`actions-box` = TRUE),
+                multiple = T)
+  })
+
+# DISTRICT
+renderUI({
+   yearapi_data_available = map.shp[map.shp$division.x %in% input$year_div, "district"]
+    pickerInput(inputId  = "year_dist",
+                label    = "District",
+                choices  = as.character(unique(sort(yearapi_data_available$district))),
+                selected = yearapi_data_available$district,
+                options  = list(`actions-box` = TRUE,`live-search` = TRUE,size = 10),
+                multiple = T)
+  })
+
+# UPAZILA
+renderUI({
+    yearapi_data_available = map.shp[map.shp$division.x %in% input$year_div & map.shp$district %in% input$year_dist, "upazila"]
+    pickerInput(inputId  = "year_upa",
+                label    = "Upazila",
+                choices  = as.character(unique(sort(yearapi_data_available$upazila))),
+                selected = yearapi_data_available$upazila,
+                options  = list(`actions-box` = TRUE,`live-search` = TRUE,size = 10),
+                multiple = T)
+    })
+
+renderUI({
+  tags$div(
+    style = "background-color: white; padding: 10px; border-radius: 5px; box-shadow: 2px 2px 5px #ccc;",
+    tags$strong("Annual Parasite Index (API)"),
+    tags$br(),
+    
+    # 0.00 (Gray)
+    tags$div(
+      style = "display: flex; align-items: center; margin-top: 5px;",
+      tags$div(style = "width: 20px; height: 15px; background-color: #e1e1e1; margin-right: 5px; border: 1px solid black;"),
+      tags$span("0.00", style = "font-size: 12px;")
+    ),
+    
+    # <1.00 (Light Yellow)
+    tags$div(
+      style = "display: flex; align-items: center; margin-top: 5px;",
+      tags$div(style = "width: 20px; height: 15px; background-color: #ffffbe; margin-right: 5px; border: 1px solid black;"),
+      tags$span("<1.00", style = "font-size: 12px;")
+    ),
+    
+    # 1.00-5.00 (Orange)
+    tags$div(
+      style = "display: flex; align-items: center; margin-top: 5px;",
+      tags$div(style = "width: 20px; height: 15px; background-color: #ffaa01; margin-right: 5px; border: 1px solid black;"),
+      tags$span("1.00-5.00", style = "font-size: 12px;")
+    ),
+    
+    # 5.01-10.00 (Red)
+    tags$div(
+      style = "display: flex; align-items: center; margin-top: 5px;",
+      tags$div(style = "width: 20px; height: 15px; background-color: #e71514; margin-right: 5px; border: 1px solid black;"),
+      tags$span("5.01-10.00", style = "font-size: 12px;")
+    ),
+    
+    # 10.01-100 (Dark Red)
+    tags$div(
+      style = "display: flex; align-items: center; margin-top: 5px;",
+      tags$div(style = "width: 20px; height: 15px; background-color: #a80000; margin-right: 5px; border: 1px solid black;"),
+      tags$span("10.01-100", style = "font-size: 12px;")
+    ),
+    
+    # >100 (Black)
+    tags$div(
+      style = "display: flex; align-items: center; margin-top: 5px;",
+      tags$div(style = "width: 20px; height: 15px; background-color: #050404; margin-right: 5px; border: 1px solid black;"),
+      tags$span(">100", style = "font-size: 12px;")
+    )
+  )
+})
+
+
+
+filteredYearlyAPI <- reactive({ map.shp[map.shp$division.x %in% input$year_div & map.shp$district %in% input$year_dist & 
+                                 map.shp$upazila %in% input$year_upa,] })
+
+yearlabels <- c("0.00", "<1.00", "1.00-5.00", "5.01-10.00", "10.01-100", ">100")
+yearmyybins <- c(0.00,0.01,1.00,5.00,10.00,100.00,Inf)
+yearmypalette <- colorBin(palette= c("#e1e1e1", "#ffffbe","#ffaa01", "#e71514","#a80000","#050404"),
+                       domain = map.shp$api_total, na.color="transparent", bins=yearmyybins)
+
+
+
+```
+
+## Row
+
+###  {data-height="600"}
+
+```{r}
+renderLeaflet({
+  leaflet(options = leafletOptions(zoomControl = FALSE, attributionControl = FALSE)) |>
+    addPolygons(
+      data = subset(filteredYearlyAPI(), Year == 2025),
+      fillColor = ~yearmypalette(api_total),
+      weight = 0.5,
+      opacity = 1,
+      color = "gray",
+      fillOpacity = 1,
+      popup = ~paste(
+        "Division:", division.x, "<br>",
+        "District:", district, "<br>",
+        "Upazila/Thana:", upazila, "<br>",
+        "Year:", Year, "<br>",
+        "Total API:", api_total
+      )
+    ) |>
+    setMapWidgetStyle(list(background = "white")) |>
+    addControl(tags$div(HTML('API 2025')), position = "topright")
+})
+```
+
+###  {data-height="600"}
+
+```{r}
+renderLeaflet({
+  leaflet(options = leafletOptions(zoomControl = FALSE, attributionControl = FALSE)) |>
+    addPolygons(
+      data = subset(filteredYearlyAPI(), Year == 2024),
+      fillColor = ~yearmypalette(api_total),
+      weight = 0.5,
+      opacity = 1,
+      color = "gray",
+      fillOpacity = 1,
+      popup = ~paste(
+        "Division:", division.x, "<br>",
+        "District:", district, "<br>",
+        "Upazila/Thana:", upazila, "<br>",
+        "Year:", Year, "<br>",
+        "Total API:", api_total
+      )
+    ) |>
+    setMapWidgetStyle(list(background = "white")) |>
+    addControl(tags$div(HTML('API 2024')), position = "topright")
+})
+```
+
+###  {data-height="600"}
+
+```{r}
+renderLeaflet({
+  leaflet(options = leafletOptions(zoomControl = FALSE, attributionControl = FALSE)) |>
+    addPolygons(
+      data = subset(filteredYearlyAPI(), Year == 2023),
+      fillColor = ~yearmypalette(api_total),
+      weight = 0.5,
+      opacity = 1,
+      color = "gray",
+      fillOpacity = 1,
+      popup = ~paste(
+        "Division:", division.x, "<br>",
+        "District:", district, "<br>",
+        "Upazila/Thana:", upazila, "<br>",
+        "Year:", Year, "<br>",
+        "Total API:", api_total
+      )
+    ) |>
+    setMapWidgetStyle(list(background = "white")) |>
+    addControl(tags$div(HTML('API 2023')), position = "topright")
+})
+```
+
+###  {data-height="600"}
+
+```{r}
+renderLeaflet({
+  leaflet(options = leafletOptions(zoomControl = FALSE, attributionControl = FALSE)) |>
+    addPolygons(
+      data = subset(filteredYearlyAPI(), Year == 2022),
+      fillColor = ~yearmypalette(api_total),
+      weight = 0.5,
+      opacity = 1,
+      color = "gray",
+      fillOpacity = 1,
+      popup = ~paste(
+        "Division:", division.x, "<br>",
+        "District:", district, "<br>",
+        "Upazila/Thana:", upazila, "<br>",
+        "Year:", Year, "<br>",
+        "Total API:", api_total
+      )
+    ) |>
+    setMapWidgetStyle(list(background = "white")) |>
+    addControl(tags$div(HTML('API 2022')), position = "topright")
+})
+```
+
+###  {data-height="600"}
+
+```{r}
+renderLeaflet({
+  leaflet(options = leafletOptions(zoomControl = FALSE, attributionControl = FALSE)) |>
+    addPolygons(
+      data = subset(filteredYearlyAPI(), Year == 2021),
+      fillColor = ~yearmypalette(api_total),
+      weight = 0.5,
+      opacity = 1,
+      color = "gray",
+      fillOpacity = 1,
+      popup = ~paste(
+        "Division:", division.x, "<br>",
+        "District:", district, "<br>",
+        "Upazila/Thana:", upazila, "<br>",
+        "Year:", Year, "<br>",
+        "Total API:", api_total
+      )
+    ) |>
+    setMapWidgetStyle(list(background = "white")) |>
+    addControl(tags$div(HTML('API 2021')), position = "topright")
+})
+```
+
+## Row
+
+###  {data-height="600"}
+
+```{r}
+renderLeaflet({
+  leaflet(options = leafletOptions(zoomControl = FALSE, attributionControl = FALSE)) |>
+    addPolygons(
+      data = subset(filteredYearlyAPI(), Year == 2020),
+      fillColor = ~yearmypalette(api_total),
+      weight = 0.5,
+      opacity = 1,
+      color = "gray",
+      fillOpacity = 1,
+      popup = ~paste(
+        "Division:", division.x, "<br>",
+        "District:", district, "<br>",
+        "Upazila/Thana:", upazila, "<br>",
+        "Year:", Year, "<br>",
+        "Total API:", api_total
+      )
+    ) |>
+    setMapWidgetStyle(list(background = "white")) |>
+    addControl(tags$div(HTML('API 2020')), position = "topright")
+})
+```
+
+###  {data-height="600"}
+
+```{r}
+renderLeaflet({
+  leaflet(options = leafletOptions(zoomControl = FALSE, attributionControl = FALSE)) |>
+    addPolygons(
+      data = subset(filteredYearlyAPI(), Year == 2019),
+      fillColor = ~yearmypalette(api_total),
+      weight = 0.5,
+      opacity = 1,
+      color = "gray",
+      fillOpacity = 1,
+      popup = ~paste(
+        "Division:", division.x, "<br>",
+        "District:", district, "<br>",
+        "Upazila/Thana:", upazila, "<br>",
+        "Year:", Year, "<br>",
+        "Total API:", api_total
+      )
+    ) |>
+    setMapWidgetStyle(list(background = "white")) |>
+    addControl(tags$div(HTML('API 2019')), position = "topright")
+})
+```
+
+###  {data-height="600"}
+
+```{r}
+renderLeaflet({
+  leaflet(options = leafletOptions(zoomControl = FALSE, attributionControl = FALSE)) |>
+    addPolygons(
+      data = subset(filteredYearlyAPI(), Year == 2018),
+      fillColor = ~yearmypalette(api_total),
+      weight = 0.5,
+      opacity = 1,
+      color = "gray",
+      fillOpacity = 1,
+      popup = ~paste(
+        "Division:", division.x, "<br>",
+        "District:", district, "<br>",
+        "Upazila/Thana:", upazila, "<br>",
+        "Year:", Year, "<br>",
+        "Total API:", api_total
+      )
+    ) |>
+    setMapWidgetStyle(list(background = "white")) |>
+    addControl(tags$div(HTML('API 2018')), position = "topright")
+})
+```
+
+###  {data-height="600"}
+
+```{r}
+renderLeaflet({
+  leaflet(options = leafletOptions(zoomControl = FALSE, attributionControl = FALSE)) |>
+    addPolygons(
+      data = subset(filteredYearlyAPI(), Year == 2017),
+      fillColor = ~yearmypalette(api_total),
+      weight = 0.5,
+      opacity = 1,
+      color = "gray",
+      fillOpacity = 1,
+      popup = ~paste(
+        "Division:", division.x, "<br>",
+        "District:", district, "<br>",
+        "Upazila/Thana:", upazila, "<br>",
+        "Year:", Year, "<br>",
+        "Total API:", api_total
+      )
+    ) |>
+    setMapWidgetStyle(list(background = "white")) |>
+    addControl(tags$div(HTML('API 2017')), position = "topright")
+})
+```
+
+###  {data-height="600"}
+
+```{r}
+renderLeaflet({
+  leaflet(options = leafletOptions(zoomControl = FALSE, attributionControl = FALSE)) |>
+    addPolygons(
+      data = subset(filteredYearlyAPI(), Year == 2016),
+      fillColor = ~yearmypalette(api_total),
+      weight = 0.5,
+      opacity = 1,
+      color = "gray",
+      fillOpacity = 1,
+      popup = ~paste(
+        "Division:", division.x, "<br>",
+        "District:", district, "<br>",
+        "Upazila/Thana:", upazila, "<br>",
+        "Year:", Year, "<br>",
+        "Total API:", api_total
+      )
+    ) |>
+    setMapWidgetStyle(list(background = "white")) |>
+    addControl(tags$div(HTML('API 2016')), position = "topright")
+})
+```
+
+## Row
+
+###  {data-height="600"}
+
+```{r}
+renderLeaflet({
+  leaflet(options = leafletOptions(zoomControl = FALSE, attributionControl = FALSE)) |>
+    addPolygons(
+      data = subset(filteredYearlyAPI(), Year == 2015),
+      fillColor = ~yearmypalette(api_total),
+      weight = 0.5,
+      opacity = 1,
+      color = "gray",
+      fillOpacity = 1,
+      popup = ~paste(
+        "Division:", division.x, "<br>",
+        "District:", district, "<br>",
+        "Upazila/Thana:", upazila, "<br>",
+        "Year:", Year, "<br>",
+        "Total API:", api_total
+      )
+    ) |>
+    setMapWidgetStyle(list(background = "white")) |>
+    addControl(tags$div(HTML('API 2015')), position = "topright")
+})
+```
+
+###  {data-height="600"}
+
+```{r}
+renderLeaflet({
+  leaflet(options = leafletOptions(zoomControl = FALSE, attributionControl = FALSE)) |>
+    addPolygons(
+      data = subset(filteredYearlyAPI(), Year == 2014),
+      fillColor = ~yearmypalette(api_total),
+      weight = 0.5,
+      opacity = 1,
+      color = "gray",
+      fillOpacity = 1,
+      popup = ~paste(
+        "Division:", division.x, "<br>",
+        "District:", district, "<br>",
+        "Upazila/Thana:", upazila, "<br>",
+        "Year:", Year, "<br>",
+        "Total API:", api_total
+      )
+    ) |>
+    setMapWidgetStyle(list(background = "white")) |>
+    addControl(tags$div(HTML('API 2014')), position = "topright")
+})
+```
+
+###  {data-height="600"}
+
+```{r}
+renderLeaflet({
+  leaflet(options = leafletOptions(zoomControl = FALSE, attributionControl = FALSE)) |>
+    addPolygons(
+      data = subset(filteredYearlyAPI(), Year == 2013),
+      fillColor = ~yearmypalette(api_total),
+      weight = 0.5,
+      opacity = 1,
+      color = "gray",
+      fillOpacity = 1,
+      popup = ~paste(
+        "Division:", division.x, "<br>",
+        "District:", district, "<br>",
+        "Upazila/Thana:", upazila, "<br>",
+        "Year:", Year, "<br>",
+        "Total API:", api_total
+      )
+    ) |>
+    setMapWidgetStyle(list(background = "white")) |>
+    addControl(tags$div(HTML('API 2013')), position = "topright")
+})
+```
+
+###  {data-height="600"}
+
+```{r}
+
+renderLeaflet({
+  leaflet(options = leafletOptions(zoomControl = FALSE, attributionControl = FALSE)) |>
+    addPolygons(
+      data = subset(filteredYearlyAPI(), Year == 2012),
+      fillColor = ~yearmypalette(api_total),
+      weight = 0.5,
+      opacity = 1,
+      color = "gray",
+      fillOpacity = 1,
+      popup = ~paste(
+        "Division:", division.x, "<br>",
+        "District:", district, "<br>",
+        "Upazila/Thana:", upazila, "<br>",
+        "Year:", Year, "<br>",
+        "Total API:", api_total
+      )
+    ) |>
+    setMapWidgetStyle(list(background = "white")) |>
+    addControl(tags$div(HTML('API 2012')), position = "topright") 
+})
+```
+
+# Time Series API Map {data-navmenu="Map"}
+
+## Inputs {.sidebar data-width="300"}
+
+```{r}
+sliderInput("yearlyapimap", "Year:",
+            min = min(map.shp$Year), max = max(map.shp$Year),
+            value = min(map.shp$Year), step = 1,
+            animate =animationOptions(interval = 3000, loop = FALSE))
+
+filtered_yearly_apiMap <- reactive({map.shp[map.shp$Year %in% input$yearlyapimap, ] })
+
+```
+
+## Column
+
+### Yearly API Map
+
+```{r}
+yearapilabels <- c("0.00", "<1.00", "1.00-5.00", "5.01-10.00", "10.01-100", ">100")
+yearapimyybins <- c(0.00,0.01,1.00,5.00,10.00,100.00,Inf)
+yearapimypalette <- colorBin(palette= c("#e1e1e1", "#ffffbe","#ffaa01", "#e71514","#a80000","#050404"),
+                       domain = map.shp$api_total, na.color="transparent", bins=yearapimyybins)
+renderLeaflet({
+yearapimap <- leaflet() %>%
+    addProviderTiles("CartoDB.Positron") %>%
+    addResetMapButton() %>%
+    addEasyButton(easyButton(
+    icon = "fa-crosshairs", title = "Locate Me",
+    onClick = JS("function(btn, map){ map.locate({setView: true});}"))) %>%
+    addFullscreenControl() 
+
+yearapimap <- yearapimap %>%
+    addPolygons(  data=filtered_yearly_apiMap()
+                 ,fillColor = ~yearapimypalette(api_total)
+                 ,weight = 0.5
+                 ,opacity = 1
+                 ,color = "gray"
+                 ,fillOpacity = 1) |>
+      addLegend(pal = yearapimypalette, values = map.shp$api_total,title = "Annual Parasite <br> Index (API)", opacity = 1
+               ,labFormat = function(type, cuts, p) {  
+                                                  paste0(yearapilabels)
+                              })
+   
+   
+})
+
+```
+
+# Bed Net Coverage Map {data-navmenu="Map"}
+
+```{r}
+
+llindata <- map.shp %>%
+  select(1:5,10,12,16) %>%
+  arrange(division.x, district, upazila, Year) %>%
+  group_by(upazila) %>%
+  mutate(Mean = roll_sum(LLIN, 3, align = "right", fill = NA)) %>%
+  mutate(llincov = (Mean/Population*100)) %>%
+  select(-Mean, -Population,-LLIN)
+
+llindata <- llindata[!st_is_empty(llindata),, drop = FALSE]
+
+llindata <- llindata %>%
+  mutate_at(c(8), ~replace(.,is.na(.),0)) 
+llindata$llincov <- round(llindata$llincov, digits = 2)
+
+llindata$radius <- cut(llindata$llincov, breaks = c(0,25,50,75,200),
+                  labels = c(25,50,75,100), right = TRUE,include.lowest = TRUE)
+llindata$radius <- as.character(llindata$radius) %>%
+  as.numeric()
+
+
+```
+
+## Inputs {.sidebar}
+
+```{r}
+renderUI({
+    pickerInput(inputId = "div_liin",
+                label = "Division:",
+                choices = as.character(unique(llindata$division.x)),
+                selected= llindata$division.x,
+                options = list(`actions-box` = TRUE),
+                multiple = T)
+  })
+#### Filter District
+renderUI({
+   data_liin = llindata[llindata$division.x %in% input$div_liin, "district"]
+
+    pickerInput(inputId = "dist_liin",
+                label = "District",
+                choices = as.character(unique(data_liin$district)),
+                selected = data_liin$district,
+                options = list(`actions-box` = TRUE),
+                multiple = T)
+  })
+
+#### Filter Upazila
+renderUI({
+    data_liin = llindata[llindata$division.x %in% input$div_liin & llindata$district %in% input$dist_liin, "upazila"]
+
+    pickerInput(inputId = "upa_liin",
+                label = "Upazila",
+                choices = as.character(unique(data_liin$upazila)),
+                selected = data_liin$upazila,
+                options = list(`actions-box` = TRUE),
+                multiple = T)
+    })
+#### Filter Year
+renderUI({
+    data_liin = llindata[llindata$division.x %in% input$div_liin & llindata$district %in% input$dist_liin & llindata$upazila %in% input$upa_liin, "Year"]
+
+    selectInput(inputId = "year_liin",
+                label = "Year",
+                choices =  unique(data_liin$Year),
+                selected = "2023")
+  })
+#### Filtered Data
+filteredData_liin <- reactive({
+    llindata[llindata$division.x %in% input$div_liin & llindata$district %in% input$dist_liin & llindata$upazila %in% input$upa_liin & llindata$Year %in%   input$year_liin,] })
+
+
+llin_map <- reactive({
+  filteredData_liin()[filteredData_liin()$llincov !=0, ]
+
+})
+
+```
+
+## Column {data-width="70%"}
+
+### Bed Net Coverage Map
+
+```{r, echo=FALSE}
+
+###Custom Legend
+
+colors <- c("white", "white", "white", "white")
+        labels <- c("25%", "50%","75%", "100%")
+        sizes <- c(10, 15, 20, 25)
+        shapes <- c("circle", "circle", "circle", "circle")
+        borders <- c("#4682b4", "#4682b4", "#4682b4", "#4682b4")
+
+        addLegendCustom <- function(map, colors, labels, sizes, shapes, borders, opacity = 1){
+
+            make_shapes <- function(colors, sizes, borders, shapes) {
+                shapes <- gsub("circle", "50%", shapes)
+                #shapes <- gsub("square", "0%", shapes)
+                paste0(colors, "; width:", sizes, "px; height:", sizes, "px; border:3px solid ", borders, "; border-radius:", shapes)
+            }
+            make_labels <- function(sizes, labels) {
+                paste0("<div style='display: inline-block;height: ",
+                       sizes, "px;margin-top: 4px;line-height: ",
+                       sizes, "px;'>", labels, "</div>")
+            }
+
+            legend_colors <- make_shapes(colors, sizes, borders, shapes)
+            legend_labels <- make_labels(sizes, labels)
+
+
+            return(addLegend(map , colors = legend_colors, labels = legend_labels, opacity = opacity,title="Bed Net Coverage",))
+        }
+        
+        
+###
+
+renderLeaflet({
+  
+labels_api_total <- c("0.00", "<1.00", "1.00-5.00", "5.01-10.00", "10.01-100", ">100")
+myybins_api_total <- c(0.00,0.01,1.00,5.00,10.00,100.00,Inf)
+mypalette_api_total <- colorBin( palette= c("#e1e1e1", "#ffffbe","#ffaa01", "#e71514","#a80000","#050404"), domain = llindata$api_total, na.color="transparent", bins=myybins_api_total)
+
+map_liin <- leaflet() %>%
+    addProviderTiles("CartoDB.Positron") %>%
+    addResetMapButton() %>%
+    addEasyButton(easyButton(
+    icon = "fa-crosshairs", title = "Locate Me",
+    onClick = JS("function(btn, map){ map.locate({setView: true});}")))
+
+
+map_liin <- map_liin  %>%
+   addPolygons(   data=filteredData_liin()
+                 ,fillColor = ~mypalette_api_total(api_total)
+                 ,weight = 0.5
+                 ,opacity = 1
+                 ,color = "gray"
+                 ,fillOpacity = 1
+                 ,popup = paste0("<b>Division: </b>"
+                                 , filteredData_liin()$division.x, "<br>"
+                                 ,"<b>District: </b>"
+                                 , filteredData_liin()$district, "<br>"
+                                 ,"<b>Upazila/Thana: </b>"
+                                 , filteredData_liin()$upazila, "<br>"
+                                 ,"<b>Year: </b>"
+                                 , filteredData_liin()$Year, "<br>"
+                                 ,"<b>API Overall API: </b>"
+                                 , filteredData_liin()$api_total, "<br>" )) %>%
+  
+  
+    addCircleMarkers(data= sf::st_point_on_surface(sf::st_zm(llin_map()))
+                     ,fillColor = "transparent"
+                     ,radius = ~radius/6
+                     ,color = "#4682b4"
+                     ,opacity = 1
+                     ,weight = 2
+                     ,popup = paste0("<b>District: </b>"
+                                     , llin_map()$district, "<br>"
+                                      ,"<b>Upazila: </b>"
+                                     , llin_map()$upazila, "<br>"
+                                     ,"<b>Coverage: </b>"
+                                     , llin_map()$llincov, " %")) %>%
+    addLegend(pal = mypalette_api_total,
+              values = api_map()$api_total,
+              title = "Annual Parasite <br> Index (API)",
+              opacity = 1,
+              labFormat = function(type, cuts, p) { paste0(labels_api_total)})  %>%
+
+    addLegendCustom(colors, labels, sizes, shapes, borders)
+
+})
+
+
+```
+
+## Column {data-width="30%"}
+
+### LIIN Coverage VS Malaria Case by Upazila
+
+```{r}
+
+renderPlotly({
+    plot<- as.data.frame(filteredData_liin()) %>%
+      plotly::plot_ly(.,x= ~llincov, y = ~upazila,  type = 'bar', name = "LIIN Coverage",
+                      marker = list(color = "rgb(1, 96, 160)"), orientation= 'h') %>%
+       add_trace(x = ~CASEE, name = "Case"
+                 ,marker = list(color = "rgb(165, 202, 229)")) %>%
+      layout (#legend = list(x = 0.5, y = 0.9,
+                            orientation= 'h',
+              xaxis = list(title = ' '),
+              yaxis = list(title = ' '))
+
+  })
+
+
+```
+
+# Malaria Vector Map {data-navmenu="Map"}
+
+## Column {data-width="50%"}
+
+### Anopheles Species Distribution Map
+
+```{r}
+ leafletOutput("vector_map", height = "100%")
+
+  absolutePanel(  id = "controls"
+                , class = "panel panel-default"
+                , fixed = TRUE
+                , draggable = TRUE
+                , top = 90
+                , left = "auto"
+                , right = '51%'
+                , bottom = "auto"
+                , width = "20%"
+                , height = "auto"
+                ,
+
+
+                renderUI({
+                  pickerInput( inputId = "Vector_species_year"
+                              ,label = "Year"
+                              ,choices = as.character(unique(sort(m_vector$Year)))
+                              ,selected= m_vector$Year
+                              ,options = list(`actions-box` = TRUE)
+                              ,multiple = T   )
+                  }),
+
+                renderUI({
+
+                  vector_Year_available = m_vector[m_vector$Year %in% input$Vector_species_year, "Mosquito_species"]
+
+                  pickerInput( inputId = "Vector_species"
+                               ,label = "Mosquito Species"
+                               ,choices = as.character(unique(sort(vector_Year_available$Mosquito_species)))
+                               ,selected= vector_Year_available$Mosquito_species
+                               ,options = list(`actions-box` = TRUE,`live-search` = TRUE, size = 10)
+                               ,multiple = T  )
+                  })
+
+
+                )
+  
+  absolutePanel( fixed   = TRUE
+                , left   = 20
+                , bottom = 20
+                , actionButton("anophelesmap", " ", icon = icon("print")))
+  
+  
+  
+
+
+vertor_map_filtered <- reactive({m_vector[m_vector$Year %in% input$Vector_species_year & m_vector$Mosquito_species %in% input$Vector_species ,] })
+
+
+observeEvent(input$anophelesmap, {
+          screenshot( filename = "Anopheles Species Distribution Map",
+            id = "vector_map")
+        })
+
+ output$vector_map <- renderLeaflet({
+
+   leaflet() %>%
+    addProviderTiles("CartoDB.Positron") %>%
+    addResetMapButton() %>%
+     addFullscreenControl()  %>%
+    addEasyButton(easyButton(
+    icon = "fa-crosshairs", title = "Locate Me",
+    onClick = JS("function(btn, map){ map.locate({setView: true});}"))) %>%
+
+     addPolygons(data= vector_b_shp,
+                 color = "white",
+                 weight = 1,
+                 fillColor = "gray",
+                 fillOpacity = 0.3 )%>%
+
+     addPolygons(data = vertor_map_filtered()
+                 ,color = "white"
+                 ,weight = 0.8
+                 ,fillColor = "red"
+                 ,fillOpacity = 1
+                 ,popup = paste0("<b>District: </b>"
+                                 , vertor_map_filtered()$ADM2_EN, "<br>"
+                                 ,"<b>Upazila: </b>"
+                                 ,vertor_map_filtered()$ADM3_EN, "<br>"
+                                 ,"<b>Species types: </b>"
+                                 ,vertor_map_filtered()$Species_type, "<br>"
+                                 ,"<b>Malaria Species: </b>"
+                                 ,vertor_map_filtered()$Label, "<br>"
+                                 ,"<b>Date: </b>"
+                                 ,vertor_map_filtered()$Date))
+
+  })
+ 
+
+```
+
+## Column {data-width="50%"}
+
+### Malaria Vector Distribution Map
+
+```{r}
+overlaytype <- c("Primary","Secondary","Suspected","Other")
+output$vec_distmap <- renderLeaflet({
+  map <- leaflet() %>%
+    addProviderTiles("CartoDB.Positron") %>%
+    addResetMapButton() %>%
+    addFullscreenControl()  %>%
+    addEasyButton(easyButton(
+    icon = "fa-crosshairs", title = "Locate Me",
+    onClick = JS("function(btn, map){ map.locate({setView: true});}"))) %>%
+    addPolygons(data= vector_b_shp,
+                 color = "white",
+                 weight = 1,
+                 fillColor = "gray",
+                 fillOpacity = 0.3 )
+
+
+    for(t in unique(m_vector$Species_type)){
+    sub = m_vector[m_vector$Species_type %in% t,]
+
+map<- map %>%
+  addPolygons(data = sub
+              ,color = "white"
+              ,weight = 0.8
+              ,fillColor = "red"
+              ,fillOpacity = 1
+              ,group = t
+              ,popup = paste0("<b>District: </b>"
+                                 ,sub$ADM2_EN, "<br>"
+                                 ,"<b>Upazila: </b>"
+                                 ,sub$ADM3_EN, "<br>"
+                                 ,"<b>Malaria Species: </b>"
+                                 ,sub$Label))
+    }
+
+ map %>%
+      addLayersControl(
+        overlayGroups = overlaytype,
+        options = layersControlOptions(collapsed = FALSE)
+        )
+
+})
+
+
+leafletOutput("vec_distmap")
+
+absolutePanel(   fixed   = TRUE
+                , bottom = 20
+                , left   = 1080
+                , actionButton("vecdist", " ", icon = icon("print")))
+
+
+
+
+observeEvent(input$vecdist, {
+          screenshot( filename = "Malaria Vector Distribution Map",
+            id = "vec_distmap")
+        })
+
+ 
+```
+
+# HF and HW Distribution Map {data-navmenu="Map"}
+
+## Column {.tabset data-width="60%"}
+
+### Health Worker Distribution Map
+
+```{r}
+output$hwdm <- renderLeaflet({
+  
+  factpal <- colorFactor(palette =  c("#F5DCA4","#E8A46A","#D16769","#B74146"), hw.map$Implementer, na.color = "gray")
+  
+
+  addLegendCustom1 <- function(map, colors, labels, bins, opacity = 0.5){
+    colorAdditions <- paste0(colors, "; border-radius: 50%; width:", bins, "px; height:", bins, "px")
+    labelAdditions <- paste0("<div style='display: inline-block;height: ",
+                             bins, "px;margin-top: 4px;line-height: ", bins, "px;'>",
+                             labels, "</div>")
+    return(addLegend(map, colors = colorAdditions,
+                     labels = labelAdditions, opacity = opacity,group="LIIN",title="Total HW", ))
+  }
+  
+  
+  map <- leaflet() %>%
+    addProviderTiles("CartoDB.Positron") %>%
+    setView(lng=92.12, lat=22.25,zoom=8)   %>%
+    addResetMapButton() %>%
+    addFullscreenControl() %>%
+    addEasyButton(easyButton(
+      icon = "fa-crosshairs", title = "Locate Me",
+      onClick = JS("function(btn, map){ map.locate({setView: true});}"))) 
+  
+  
+  map <- map %>%
+    addPolygons(data=hw.map,
+                stroke = FALSE, smoothFactor = 0.2, fillOpacity = 1,
+                color = ~factpal(Implementer)
+                ,popup = paste0("<b>Division: </b>"
+                                , hw.map$ADM1_EN, "<br>"
+                                ,"<b>District: </b>"
+                                , hw.map$ADM2_EN, "<br>"
+                                ,"<b>Upazila: </b>"
+                                , hw.map$ADM3_EN, "<br>"
+                                ,"<b>Implementer: </b>"
+                                , hw.map$Implementer)) %>%
+    
+    addCircleMarkers( data = sf::st_point_on_surface(sf::st_zm(hw.map.point)),
+                      color = "#4682b4",
+                      stroke = FALSE,
+                      fillOpacity = 1,
+                      radius = ~sqrt(thw),
+                      popup = paste0( "<b>Division: </b>", hw.map.point$ADM1_EN, "<br>"
+                                      ,"<b>District: </b>", hw.map.point$ADM2_EN, "<br>"
+                                      ,"<b>Upazila: </b>", hw.map.point$Upazila, "<br>"
+                                      ,"<b>Total Health Workers: </b>", hw.map.point$`Total Health Worker`)) %>%
+    
+    
+    addLegend( pal      = factpal,
+              values    = hw.map$Implementer,
+              na.label  = NA,
+              title     = "Implementer",
+              opacity   = 1) %>%
+    
+    addLegendCustom1(colors= c("#4682b4","#4682b4","#4682b4","#4682b4")
+                     ,bins = c(10,15,20,25,30,35)
+                     ,labels = c("0-50", "50-100", "100-150","150-200","200-250","250-300")
+                     , opacity = 1)
+
+  })
+
+leafletOutput("hwdm")
+
+
+absolutePanel(   fixed = TRUE
+                , bottom = 20
+                , left = 20
+                , actionButton("printhwdm", " ", icon = icon("print")))
+
+observeEvent(input$printhwdm, {
+          screenshot( filename = "Health Worker Distribution Map",
+            id = "hwdm")
+        })
+
+
+```
+
+### Health Worker Coverage
+
+```{r}
+
+oceanIcons <- iconList(
+  'District Hospital'       = makeIcon("hospital.png",   "hospital.png",   24, 24))
+
+output$hwcmmap <- renderLeaflet({
+  hwcovlabels <- c(">1", "1-10", "10-20", "20-30", "30-50")
+  hwcoverbin <- c(0,1,10,20,30,60)
+  hwcoverpal <- colorBin("Blues", domain = hwcoverage$HWPER10K, bins = hwcoverbin,na.color = "gray")
+  
+  
+  
+  
+  
+  map <- leaflet(options = leafletOptions(maxZoom = 17)) %>%
+    addProviderTiles("CartoDB.Positron", group = "Default") %>%
+    addProviderTiles(providers$Esri.WorldImagery, group = "Satellite") %>%
+    addTiles(urlTemplate = "http://mt0.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}&s=Ga", group = "Google") %>%
+    addResetMapButton() %>%
+    addFullscreenControl() %>%
+    addEasyButton(easyButton(
+      icon = "fa-crosshairs", title = "Locate Me",
+      onClick = JS("function(btn, map){ map.locate({setView: true});}"))) %>%
+    setView(lng=92.12, lat=22.25,zoom=8) %>%
+    addMeasure(
+      position = "topleft",
+      primaryLengthUnit = "meters",
+      primaryAreaUnit = "sqmeters",
+      activeColor = "#3D535D",
+      completedColor = "#7D4479" )
+  
+  map <- map %>%
+    addPolygons(data=hwcoverage,
+                stroke = FALSE, smoothFactor = 0.2,
+                fillOpacity = 1,
+                fillColor = ~hwcoverpal(HWPER10K),
+                color = "white",
+                group = "health worker coverage",
+                popup = paste0("<b>District: </b>"
+                               , hwcoverage$ADM2_EN, "<br>"
+                               ,"<b>Upazila: </b>"
+                               , hwcoverage$ADM3_EN, "<br>"
+                               ,"<b>Population (2021): </b>"
+                               , hwcoverage$POP, "<br>"
+                               ,"<b>Total Health Worker: </b>"
+                               , hwcoverage$TotalHealthWorker, "<br>"
+                               ,"<b>Health Worker Per 10K Population: </b>"
+                               , hwcoverage$HWPER10K))  %>%
+    addMarkers(data=hf,
+               ~LONGITUDE, ~LATITUDE,
+               icon = ~oceanIcons,
+               label = ~htmlEscape(HF_NAME),
+               clusterOptions = markerClusterOptions(),
+               group = "Health facilities") %>%
+    
+    addLegend(pal = hwcoverpal,
+              values = hwcoverage$HWPER10K,
+              title = "HW Coverage Per <br>10K Population",
+              opacity = 1,
+              labFormat = function(type, cuts, p) {paste0(hwcovlabels)}) %>%
+    addLegendImage(images = c("hospital.png"),
+                   
+                   labels = c( 'Health Facility'),width = 12, height = 12,
+                   labelStyle = "font-size: 10px; vertical-align: middle;",
+                   orientation = 'vertical',
+                   title = "Health Facilities",
+                   position = 'topright') %>%
+    addLayersControl( baseGroups = c( "Default","Google", "Satellite"),
+      position = "bottomright",
+      overlayGroups = c("health worker coverage" , "Health facilities"),
+      options = layersControlOptions(collapsed = FALSE))
+  
+  
+  
+})
+
+leafletOutput("hwcmmap")
+absolutePanel(    fixed   = TRUE
+                , bottom  = 20
+                , left    = 20
+                , actionButton("printhwcm", " ", icon = icon("print")))
+
+observeEvent(input$printhwcm, {
+          screenshot( filename = "Health Worker Coverage map",
+            id = "hwcmmap")
+        })
+
+
+```
+
+## Column {data-width="40%"}
+
+### Number of Health Workers By Upazila
+
+```{r}
+fillCol( height = 600, flex = c(NA, 1),
+         inputPanel(
+           renderUI({
+            pickerInput(inputId  = "hwdis_chart",
+                        label     = "District:",
+                        choices   = as.character(unique(hwchart$District)),
+                        selected  = "Bandarban",
+                        options   = list(`actions-box` = TRUE),
+                        multiple  = T)
+             }),
+           
+           renderUI({
+            hwdata_chart = hwchart[hwchart$District %in% input$hwdis_chart, "Upazila"]
+            
+            pickerInput(inputId  = "hwdist_chart",
+                        label    = "Upazila:",
+                        choices  = as.character(unique(hwdata_chart$Upazila)),
+                        selected = hwdata_chart$Upazila,
+                        options  = list(`actions-box` = TRUE),
+                        multiple  = T)
+          }),
+          
+          
+        ),
+        
+        plotlyOutput("hw_plot", height = "100%")
+        
+)
+
+hw_chart_fil <- reactive ({ hwchart[hwchart$District %in% input$hwdis_chart & hwchart$Upazila %in% input$hwdist_chart,]})
+
+output$hw_plot <- renderPlotly({
+  
+  if (nrow(hw_chart_fil()) == 0) {
+    return(NULL)
+  }
+  
+  hwp <- ggplot(hw_chart_fil(), aes( y = NumberofHW, x = Upazila, fill = HW.TYPE )) +
+    geom_bar(stat="identity", position=position_dodge()) + 
+    facet_grid(. ~ TYPE) +theme_classic() + 
+    scale_fill_brewer(palette = 'Blues') 
+  
+  
+  ggplotly(hwp) %>%
+    config(displaylogo = FALSE,
+           modeBarButtonsToRemove = c("zoomIn2d", "zoomOut2d",'zoom',
+                                      'pan','hoverClosestCartesian','hoverCompareCartesian'
+                                      ,'lasso2d','select2d'))
+})
+
+
+
+```
+
+# Yearly Malaria Cases {data-navmenu="Graph and Chart"}
+
+```{r}
+fillCol(height = 600, flex = c(NA, 1),
+  inputPanel(
+    renderUI({
+    pickerInput(inputId = "div_chart",
+                label = "Division:",
+                choices = as.character(unique(sort(data.chart$division))),
+                selected= data.chart$division,
+                options = list(`actions-box` = TRUE, style = "btn btn-default btn-xs"),
+                multiple = T)
+  }),
+  renderUI({
+   data_chart = data.chart[data.chart$division %in% input$div_chart, "DistrictName"]
+
+    pickerInput(inputId = "dist_chart",
+                label = "District",
+                choices = as.character(unique(sort(data_chart$DistrictName))),
+                selected = "Bandarban",
+                options = list(`actions-box` = TRUE,`live-search` = TRUE,size = 10, style = "btn btn-default btn-xs"),
+                multiple = T)
+  }),
+  renderUI({
+    data_chart = data.chart[data.chart$division %in% input$div_chart & data.chart$DistrictName %in% input$dist_chart, "UpazilaName"]
+
+    pickerInput(inputId = "upa_chart",
+                label = "Upazila",
+                choices = as.character(unique(sort(data_chart$UpazilaName))),
+                selected = data_chart$UpazilaName,
+                options = list(`actions-box` = TRUE, style = "btn btn-default btn-xs"),
+                multiple = T)
+    })
+
+
+    ),
+  plotlyOutput("plot", height = "100%")
+
+)
+
+yearly_chart <- reactive ({ data.chart[data.chart$division %in% input$div_chart & data.chart$DistrictName %in% input$dist_chart & data.chart$UpazilaName %in% input$upa_chart,]})
+
+
+  output$plot <- renderPlotly({
+    y_case_deat <- yearly_chart() %>%
+      plotly::plot_ly(.,x = ~ReportYear, y= ~CASEE) %>%
+      add_lines(split = ~UpazilaName, color =~UpazilaName, line = list(shape = "spline")) %>%
+      layout (title = list(text = "Yearly Malaria Cases", y = 0.98),
+              xaxis = list(title = 'Year'),
+              yaxis = list(title = 'Cases'))
+
+
+
+  })
+
+
+```
+
+# Monthly Malaria Cases {data-navmenu="Graph and Chart"}
+
+```{r}
+fillCol(height = 600, flex = c(NA, 1),
+  inputPanel(
+    renderUI({
+    pickerInput(inputId = "div_month_chart",
+                label = "Division:",
+                choices = as.character(unique(sort(month.data.chart$division))),
+                selected= month.data.chart$division,
+                options = list(`actions-box` = TRUE, style = "btn btn-default btn-xs"),
+                multiple = T)
+  }),
+  renderUI({
+   month_data_chart = month.data.chart[month.data.chart$division %in% input$div_month_chart, "DistrictName"]
+
+    pickerInput(inputId = "dist_month_chart",
+                label = "District:",
+                choices = as.character(unique(sort(month_data_chart$DistrictName))),
+                selected = month_data_chart$DistrictName,
+                options = list(`actions-box` = TRUE,`live-search` = TRUE,size = 10, style = "btn btn-default btn-xs"),
+                multiple = T)
+  }),
+  renderUI({
+    month_data_chart = month.data.chart[month.data.chart$division %in% input$div_month_chart &
+                                        month.data.chart$DistrictName %in% input$dist_month_chart, "UpazilaName"]
+
+    pickerInput(inputId = "upa_month_chart",
+                label = "Upazila:",
+                choices = as.character(unique(sort(month_data_chart$UpazilaName))),
+                selected = month_data_chart$UpazilaName,
+                options = list(`actions-box` = TRUE, style = "btn btn-default btn-xs"),
+                multiple = T)
+    })
+
+
+    ),
+  plotlyOutput("monthly_plot", height = "100%")
+
+)
+
+monthly_case_chart <- reactive ({ month.data.chart[month.data.chart$division %in% input$div_month_chart &
+                                                   month.data.chart$DistrictName %in% input$dist_month_chart &
+                                                   month.data.chart$UpazilaName %in% input$upa_month_chart,]})
+
+
+  output$monthly_plot <- renderPlotly({
+    casemonthly <- monthly_case_chart() |> group_by(ReportYear,ReportMonth) |> summarise(CASEE = sum(CASEE),.groups="drop") 
+      plotly::plot_ly(casemonthly,x = ~ReportMonth, y = ~CASEE, color = ~factor(ReportYear)) %>% add_lines() |>
+      layout (title = list(text = "Monthly Malaria Cases", y = 0.98),
+              xaxis = list(title = 'Month'),
+              yaxis = list(title = 'Cases'))
+
+
+
+  })
+
+
+```
+
+# Yearly Malaria Cases and Deaths {data-navmenu="Graph and Chart"}
+
+```{r}
+
+fillCol(height = 600, flex = c(NA, 1),
+  inputPanel(
+    renderUI({
+    pickerInput(inputId = "div_casedeath",
+                label = "Division:",
+                choices = as.character(unique(sort(data.chart$division))),
+                selected= data.chart$division,
+                options = list(`actions-box` = TRUE, style = "btn btn-default btn-xs"),
+                multiple = T)
+  }),
+
+  renderUI({
+   data_casedeath = data.chart[data.chart$division %in% input$div_casedeath, "DistrictName"]
+
+    pickerInput(inputId = "dist_casedeath",
+                label = "District",
+                choices = as.character(unique(sort(data_casedeath$DistrictName))),
+                selected = as.character(unique(data_casedeath$DistrictName)),
+                options = list(`actions-box` = TRUE,`live-search` = TRUE,size = 10, style = "btn btn-default btn-xs"),
+                multiple = T)
+  }),
+
+  renderUI({
+    data_casedeath = data.chart[data.chart$division %in% input$div_casedeath & data.chart$DistrictName %in% input$dist_casedeath, "UpazilaName"]
+
+    pickerInput(inputId = "upa_casedeath",
+                label = "Upazila",
+                choices = as.character(unique(sort(data_casedeath$UpazilaName))),
+                selected =data_casedeath$UpazilaName,
+                options = list(`actions-box` = TRUE,`live-search` = TRUE,size = 10, style = "btn btn-default btn-xs"),
+                multiple = T)
+    })
+
+
+    ),
+  plotlyOutput("casedeath", height = "100%")
+
+)
+
+casedeath_chart <- reactive ({ data.chart[data.chart$division %in% input$div_casedeath & data.chart$DistrictName %in% input$dist_casedeath & data.chart$UpazilaName %in% input$upa_casedeath,]})
+
+
+  output$casedeath <- renderPlotly({
+    data_casedeath <- casedeath_chart() %>%
+      plotly::plot_ly(., x=~ReportYear, y= ~DEATH, type = "bar", name = "Death",
+                      marker = list(color = "rgb(165, 202, 229)"),
+                      # hovertext = paste("Year:",casedeath_chart()$YEAR,
+                      #           "<br>Death :",casedeath_chart()$DEATH),
+                      transforms = list(list(
+                                            type = 'aggregate',
+                                            groups = ~ReportYear,
+                                            aggregations = list(list(target = 'y',
+                                                                     func = 'sum',
+                                                                     enabled = T)
+                                                                )
+                                            )
+                                      )
+                      ) %>%
+      add_trace(y= ~CASEE, name="Case",
+                marker = list(color = "rgb(1, 96, 160)"),
+                # hovertext = paste("Year:",casedeath_chart()$YEAR,
+                #                 "<br>Case :",casedeath_chart()$CASEE),
+                transforms = list(list(
+                                            type = 'aggregate',
+                                            groups = ~ReportYear,
+                                            aggregations = list(list(target = 'y',
+                                                                     func = 'sum',
+                                                                     enabled = T)
+                                                                )
+                                            )
+                                      )
+                ) %>%
+                layout(title = "Yearly Case & Death",
+                       xaxis = list(title = "Year"),
+                       yaxis = list(title = "Case & Death"))
+    })
+
+
+```
+
+# Age and Gender {data-navmenu="Graph and Chart"}
+
+```{r}
+fillCol(flex = c(NA, 1),
+  inputPanel(
+    renderUI({
+    pickerInput(inputId = "div_agegender",
+                label = "Division:",
+                choices = as.character(unique(sort(data.chart$division))),
+                selected= data.chart$division,
+                options = list(`actions-box` = TRUE, style = "btn btn-default btn-xs"),
+                multiple = T)
+  }),
+
+renderUI({
+  data_agegender = data.chart[data.chart$division %in% input$div_agegender, "DistrictName"]
+  
+    pickerInput(inputId = "dist_agegender",
+                label = "District",
+                choices = as.character(unique(sort(data_agegender$DistrictName))),
+                selected = data_agegender$DistrictName,
+                options = list(`actions-box` = TRUE, style = "btn btn-default btn-xs" ),
+                multiple = T)
+  }),
+
+renderUI({
+    data_agegender = data.chart[data.chart$division %in% input$div_agegender & data.chart$DistrictName %in% input$dist_agegender, "UpazilaName"]
+
+    pickerInput(inputId = "upa_agegender",
+                label = "Upazila",
+                choices = as.character(unique(sort(data_agegender$UpazilaName))),
+                selected = data_agegender$UpazilaName,
+                options = list(`actions-box` = TRUE, style = "btn btn-default btn-xs"),
+                multiple = T)
+    }),
+
+renderUI({
+    data_agegender = data.chart[data.chart$division %in% input$div_agegender & data.chart$DistrictName %in% input$dist_agegender &
+                                  data.chart$UpazilaName %in% input$upa_agegender, "ReportYear"]
+
+    pickerInput(inputId = "year_agegender",
+                label = "Year",
+                choices =  sort(unique(data_agegender$ReportYear)),
+                selected = "2023",
+                options = list(`actions-box` = TRUE, style = "btn btn-default btn-xs"),
+                multiple = F)
+  })
+
+
+    ),
+  fillRow(
+           plotlyOutput("agegroup_chart",width=NULL, height = "100%") ,
+           plotlyOutput("gender_chart",width=NULL, height = "100%")
+           )
+  
+)
+
+filtered_agegender <- reactive({data.chart[data.chart$division %in% input$div_agegender & data.chart$DistrictName %in% input$dist_agegender &
+                 data.chart$UpazilaName %in% input$upa_agegender & data.chart$ReportYear %in% input$year_agegender,] })
+
+
+output$agegroup_chart <- renderPlotly({
+  age_chart <- filtered_agegender()  |>
+    select(23:26)  |>
+    `colnames<-`(c('<1', '1-4','5-14', '15+')) |>
+    gather(age, age_cases)  |>
+    group_by(age)  |>
+    summarise(age_cases = sum(age_cases, na.rm = T)) |>
+    mutate(age = factor(age, levels = c("<1","1-4","5-14","15+"))) 
+  
+    plotly::plot_ly(age_chart, x = ~age, y = ~age_cases, type = 'bar') |>
+    layout (title = list(text = "Age specific case", y = 0.98),
+            xaxis = list(title = 'Age Group'),
+            yaxis = list(title = 'Cases'))
+})
+
+output$gender_chart <- renderPlotly({
+  gender_pie <- filtered_agegender() |>  select(20,21)  |> `colnames<-`(c('Male', 'Female')) |>
+  gather(Gender, Gender_case)  |>
+  group_by(Gender)  |>
+  summarise(Gender_case = sum(Gender_case, na.rm = T))
+  
+  plotly::plot_ly(gender_pie,labels = ~Gender, values = ~Gender_case, type = 'pie') |>
+    layout (title ="Sex specific case ratio")
+})
+
+```
+
+# Species wise malaria cases (Pf/Pv/mixed/Total) {data-navmenu="Graph and Chart"}
+
+```{r}
+
+fillCol(height = 600, flex = c(NA, 1),
+  inputPanel(
+    renderUI({
+    pickerInput(inputId = "div_species",
+                label = "Division:",
+                choices = as.character(unique(sort(data.chart$division))),
+                selected= data.chart$division,
+                options = list(`actions-box` = TRUE, style = "btn btn-default btn-xs"),
+                multiple = T)
+  }),
+  renderUI({
+   data_species = data.chart[data.chart$division %in% input$div_species, "DistrictName"]
+
+    pickerInput(inputId = "dist_species",
+                label = "District",
+                choices = as.character(unique(sort(data_species$DistrictName))),
+                selected = data_species$DistrictName,
+                options = list(`actions-box` = TRUE,`live-search` = TRUE,size = 10, style = "btn btn-default btn-xs"),
+                multiple = T)
+  }),
+  renderUI({
+    data_species = data.chart[data.chart$division %in% input$div_species & data.chart$DistrictName %in% input$dist_species, "UpazilaName"]
+
+    pickerInput(inputId = "upa_species",
+                label = "Upazila",
+                choices = as.character(unique(sort(data_species$UpazilaName))),
+                selected = data_species$UpazilaName,
+                options = list(`actions-box` = TRUE,`live-search` = TRUE,size = 10, style = "btn btn-default btn-xs"),
+                multiple = T)
+    })
+
+
+    ),
+
+  plotlyOutput("species", height = "100%")
+
+)
+
+species_chart <- reactive ({ data.chart[data.chart$division %in% input$div_species & data.chart$DistrictName %in% input$dist_species & data.chart$UpazilaName %in% input$upa_species,]})
+
+
+
+  output$species <- renderPlotly({
+    data_species <- species_chart() %>%
+      plotly::plot_ly(., x=~ReportYear, y= ~PV, type = "bar", name = "Pv",
+                      marker = list(color = "#a5cae5",colorscale='Blues',reversescale =T),
+                      transforms = list(list(
+                                            type = 'aggregate',
+                                            groups = ~ReportYear,
+                                            aggregations = list(list(target = 'y',
+                                                                     func = 'sum',
+                                                                     enabled = T)
+                                                                )
+                                            )
+                                      )
+                      ) %>%
+      add_trace(y= ~MIXED, name="Mixed",
+                marker = list(color = "#4e95c9",colorscale='Blues',reversescale =T),
+                transforms = list(list(
+                                            type = 'aggregate',
+                                            groups = ~ReportYear,
+                                            aggregations = list(list(target = 'y',
+                                                                     func = 'sum',
+                                                                     enabled = T)
+                                                                )
+                                            )
+                                      )
+                ) %>%
+      add_trace(y= ~PF, name="Pf",
+                marker = list(color = "#1376ba",colorscale='Blues',reversescale =T),
+                transforms = list(list(
+                                            type = 'aggregate',
+                                            groups = ~ReportYear,
+                                            aggregations = list(list(target = 'y',
+                                                                     func = 'sum',
+                                                                     enabled = T)
+                                                                )
+                                            )
+                                      )
+                ) %>%
+
+      add_trace(y= ~CASEE, name="total",
+                marker = list(color = "#0160a0",colorscale='Blues',reversescale =T),
+                transforms = list(list(
+                                            type = 'aggregate',
+                                            groups = ~ReportYear,
+                                            aggregations = list(list(target = 'y',
+                                                                     func = 'sum',
+                                                                     enabled = T)
+                                                                )
+                                            )
+                                      )
+                ) %>%
+                layout(title = "Species wise case (pf/pv/mixed/total)",
+                       xaxis = list(title = "Year"),
+                       yaxis = list(title = "pv, pf, mixed & total"))
+
+  })
+
+```
+
+# Case vs Severe malaria {data-navmenu="Graph and Chart"}
+
+## Column {data-weight="50%"}
+
+### Case vs Severe malaria
+
+```{r}
+fillCol(flex = c(NA, 1),
+  inputPanel(
+    renderUI({
+    pickerInput(inputId = "div_severe",
+                label = "Division:",
+                choices = as.character(unique(sort(data.chart$division))),
+                selected= data.chart$division,
+                options = list(`actions-box` = TRUE, style = "btn btn-default btn-xs"),
+                multiple = T)
+  }),
+  renderUI({
+   data_severemalaria = data.chart[data.chart$division %in% input$div_severe, "DistrictName"]
+
+    pickerInput(inputId = "dist_severe",
+                label = "District",
+                choices = as.character(unique(sort(data_severemalaria$DistrictName))),
+                selected = data_severemalaria$DistrictName,
+                options = list(`actions-box` = TRUE,`live-search` = TRUE,size = 10, style = "btn btn-default btn-xs"),
+                multiple = T)
+  }),
+  renderUI({
+    data_severemalaria = data.chart[data.chart$division %in% input$div_severe & data.chart$DistrictName %in% input$dist_severe, "UpazilaName"]
+
+    pickerInput(inputId = "upa_severe",
+                label = "Upazila",
+                choices = as.character(unique(sort(data_severemalaria$UpazilaName))),
+                selected = data_severemalaria$UpazilaName,
+                options = list(`actions-box` = TRUE,`live-search` = TRUE,size = 10, style = "btn btn-default btn-xs"),
+                multiple = T)
+    })
+
+
+    ),
+  fillRow(
+           plotlyOutput("chart_1",width=NULL, height = "100%") ,
+           plotlyOutput("chart_2",width=NULL, height = "100%")
+           )
+
+)
+
+severemalaria_chart <- reactive ({ data.chart[data.chart$division %in% input$div_severe &  data.chart$DistrictName %in% input$dist_severe & data.chart$UpazilaName %in% input$upa_severe,]})
+
+output$chart_1 <- renderPlotly({
+  data_malariasevere <- severemalaria_chart() %>%
+    plotly::plot_ly(., x=~ReportYear, y= ~CASEE, type = "bar", name = "Case",
+                    marker = list(color = "rgb(1, 96, 160)"),
+                    transforms = list(list(
+                                            type = 'aggregate',
+                                            groups = ~ReportYear,
+                                            aggregations = list(list(target = 'y',
+                                                                     func = 'sum',
+                                                                     enabled = T)
+                                                                )
+                                            )
+                                      )
+                    ) %>%
+    add_trace(y= ~SEVERE, name="Severe Malaria",
+              marker = list(color = "rgb(165, 202, 229)"),
+              transforms = list(list(type = 'aggregate',
+                                     groups = ~ReportYear,
+                                     aggregations = list(list(target = 'y',
+                                                              func = 'sum',
+                                                              enabled = T)
+                                                         )
+                                     )
+                                )
+              ) %>%
+    layout(title = list(text = "Yearly Malaria Cases & Severe Malaria", y = 0.98),
+           xaxis = list(title = "Year"),
+           yaxis = list(title = "Case & Severe"))
+
+})
+
+
+output$chart_2 <-renderPlotly({
+  data_malariadeathrate <- severemalaria_chart() %>%
+    plotly::plot_ly(., x=~ReportYear, y= ~CASEE, type = "bar", name = "Case",transforms = list(list(
+                                            type = 'aggregate',
+                                            groups = ~ReportYear,
+                                            aggregations = list(list(target = 'y',
+                                                                     func = 'sum',
+                                                                     enabled = T)
+                                                                )
+                                            )
+                                      )
+                    ) %>%
+    add_trace(y= ~round((DEATH/CASEE),2), name="case fatality rate"
+              ,
+              transforms = list(list(type = 'aggregate',
+                                     groups = ~YEAR))
+              ) %>%
+    layout(title = list(text = "Yearly Malaria Cases & case fatality rate", y = 0.98),
+           xaxis = list(title = "Year"),
+           yaxis = list(title = "Case & fatality rate"))
+})
+
+```
+
+# Test, Case and Test Positivity Rate {data-navmenu="Graph and Chart"}
+
+## Column {data-weight="50%"}
+
+### Test and Case
+
+```{r}
+
+fillCol(height = 600, flex = c(NA, 1),
+    inputPanel(
+    renderUI({
+    pickerInput(inputId = "div_testcase",
+                label = "Division:",
+                choices = as.character(unique(sort(data.chart$division))),
+                selected= data.chart$division,
+                options = list(`actions-box` = TRUE, style = "btn btn-default btn-xs"),
+                multiple = T)
+  }),
+  renderUI({
+   data_testcase = data.chart[data.chart$division %in% input$div_testcase, "DistrictName"]
+
+    pickerInput(inputId = "dist_testcase",
+                label = "District",
+                choices = as.character(unique(sort(data_testcase$DistrictName))),
+                selected = data_testcase$DistrictName,
+                options = list(`actions-box` = TRUE, style = "btn btn-default btn-xs"),
+                multiple = T)
+  }),
+  renderUI({
+    data_testcase = data.chart[data.chart$division %in% input$div_testcase & data.chart$DistrictName %in% input$dist_testcase, "UpazilaName"]
+
+    pickerInput(inputId = "upa_testcase",
+                label = "Upazila",
+                choices = as.character(unique(sort(data_testcase$UpazilaName))),
+                selected = data_testcase$UpazilaName,
+                options = list(`actions-box` = TRUE, style = "btn btn-default btn-xs"),
+                multiple = T)
+    })
+
+
+    ),
+  fillRow( plotlyOutput("chart_3") ,
+
+           plotlyOutput("chart_5")
+           )
+
+  )
+
+test_case_chart <- reactive ({ data.chart[data.chart$division %in% input$div_testcase & data.chart$DistrictName %in% input$dist_testcase & data.chart$UpazilaName %in% input$upa_testcase,]})
+
+
+output$chart_3 <-renderPlotly({
+    test_case <- test_case_chart() %>%
+      plotly::plot_ly(., x=~ReportYear, y=~TEST, name = 'Test',type = 'scatter',mode = 'lines+markers'
+                      ,marker = list(color = "rgb(165, 202, 229)")
+                      ,line =list(shape = "spline")
+                      ,transforms = list(list(type = 'aggregate',
+                                     groups = ~ReportYear,
+                                     aggregations = list(list(target = 'y',
+                                                              func = 'sum',
+                                                              enabled = T)
+                                                         )
+                                     )
+                                )
+                      ) %>%
+      add_trace(y=~CASEE, name= "Case",line = list(shape = "spline", color = "rgb(165, 202, 229)"),
+                transforms = list(list(type = 'aggregate',
+                                     groups = ~ReportYear,
+                                     aggregations = list(list(target = 'y',
+                                                              func = 'sum',
+                                                              enabled = T)
+                                                         )
+                                     )
+                                )
+                ) %>%
+                layout ( title = list(text = "Malaria Test and Case", y = 0.98),
+                         xaxis = list(title = 'Year'),
+                         yaxis = list(title = ''))
+
+
+
+  })
+
+output$chart_5 <-renderPlotly({
+    data_casePrate <- test_case_chart() %>%
+      plotly::plot_ly(., x=~ReportYear, y= ~round((CASEE/TEST),2), type = "bar",
+                      transforms = list(list(type = 'aggregate',
+                                     groups = ~ReportYear,
+                                     aggregations = list(list(target = 'y',
+                                                              func = 'sum',
+                                                              enabled = T)
+                                                         )
+                                     )
+                                )
+                      ) %>%
+      layout(title = list(text = "Test positivity rate", y = 0.98),
+             xaxis = list(title = "Year"),
+             yaxis = list(title = "Test positivity rate"))
+
+})
+
+```
+
+<!-- Data View {data-icon="fa-table"} -->
+
+<!-- ================================================================================ -->
+
+# Pivot Table {data-navmenu="❆ Data Analysis Tool"}
+
+```{r}
+renderRpivotTable({
+  rpivotTable(data.chart,width="100%", height="400px")
+  })
+
+```
+
+# Physical Accessibility Model {data-navmenu="❆ Data Analysis Tool"}
+
+```{r embed, out.extra='style="border: none;"', out.width='100%'}
+knitr::include_url("https://moru.maps.arcgis.com/apps/dashboards/4eaca8b02cb04ef28136645c6a6c38c3", height = "100%")
+```
+
+# Risk Analysis {data-navmenu="❆ Data Analysis Tool"}
+
+## Column {data-width="20%"}
+
+### Layers
+
+```{r}
+awesomeCheckboxGroup(
+   inputId = "Id044",
+   label = "Layers",
+    choices = c("Annual Parasite Incidence (API)",
+                "LLINs Distribution",
+                "Health Facility Distribution",
+                "Health Workers Distribution",
+                "Closing Stock",
+                "Physical Accessibility",
+                "Temperature",
+                "Rainfall"),
+   selected = "Annual Parasite Incidence (API)"
+)
+
+```
+
+## Column {data-width="80%"}
+
+### Risk Map (Data is not available)
+
+```{r}
+renderLeaflet({
+  riskmap <- leaflet() %>%
+    addProviderTiles("CartoDB.Positron") %>%
+    addResetMapButton() %>%
+    addEasyButton(easyButton(
+    icon = "fa-crosshairs", title = "Locate Me",
+    onClick = JS("function(btn, map){ map.locate({setView: true});}"))) %>%
+    addFullscreenControl() %>%
+    setView(lng=90.19, lat=23.94,zoom=7)
+})
+
+```
+
+# Vill API Viz {data-icon="fa-map-o"}
+
+### Malaria cases per 1000 population in Lama upazila
+
+<center>
+
+```{r}
+
+output[["image"]] <- renderImage({
+    filename <- paste0("img/caseimglow.jpg")
+    list(src = filename, height=600)
+})
+imageOutput("image", height = "100%")
+
+```
+
+</center>
+
+# Meta Data {data-navmenu="🛈 About"}
+
+**Malaria Case Data**\
+Source: National Malaria Elimination and Aedes Transmitted Disease Control Program (NME&ATDCP)\
+Contributor: NME&ATDCP\
+Date of Dataset: January, 2012 - April, 2021\
+Updated: April 2021\
+Expected Update Frequency: Every Year\
+Location: Bangladesh\
+Visibility: Private\
+Copyright: People's Republic of Bangladesh\
+File Format: XLSX, SHP
+
+**Bed Net Distribution Data**\
+Source: National Malaria Elimination and Aedes Transmitted Disease Control Program (NME&ATDCP)\
+Contributor: NME&ATDCP\
+Date of Dataset: 2012-2021\
+Updated: 2021\
+Expected Update Frequency: Every Year\
+Location: Bangladesh\
+Visibility: Private\
+Copyright: People's Republic of Bangladesh\
+File Format: XLXS, SHP
+
+**Anofilies Species List**\
+Source: National Malaria Elimination and Aedes Transmitted Disease Control Program (NME&ATDCP)\
+Contributor: NME&ATDCP\
+Date of Dataset: 2012-2021\
+Updated: 2021\
+Expected Update Frequency: Every Year\
+Location: Bangladesh\
+Visibility: Private\
+Copyright: People's Republic of Bangladesh\
+File Format: XLSX, SHP
+
+**Health Worker List**\
+Source: National Malaria Elimination and Aedes Transmitted Disease Control Program (NME&ATDCP)\
+Contributor: NME&ATDCP, BRAC\
+Date of Dataset: 2012-2021\
+Updated: 2021\
+Expected Update Frequency: Every Year\
+Location: Bangladesh\
+Visibility: Private\
+Copyright: People's Republic of Bangladesh\
+File Format: XLSX, SHP
+
+**Health Facility List**\
+Source: Ministry of Health and Family Welfare\
+Contributor: Mahidul Oxford Tropical Reseach Unit (MORU)\
+Date of Dataset: 2012-2021\
+Updated: 2021\
+Expected Update Frequency: Every Year\
+Location: Bangladesh\
+Visibility: Private\
+Copyright: People's Republic of Bangladesh\
+File Format: XLSX,SHP
+
+**Population Data**\
+Source: Bangladesh Bureau of Statistics\
+Contributor; BBS, MORU\
+Date of Dataset: 2012-2021\
+Updated: 2021\
+Expected Update Frequency: Every Year\
+Location: Bangladesh\
+Visibility: Public\
+Copyright: People's Republic of Bangladesh\
+File Format: XLSX, SHP
+
+# Relevant resources {data-navmenu="🛈 About"}
+
+**Data Calculation Method**
+
+Annual Parasitic Incidence of Malaria Cases\
+The number of confirmed new cases from malaria registered in a specific year, expressed per 1,000 individuals under surveillance, for a given country, territory, or geographic area. Annual parasite index (API) refers to high and moderate malaria transmission risk areas (WHO). The datasets were calculated for both species of Plasmodium vivax, Plasmodium falciparum.
+
+```         
+          Total no. of positive slides for parasite in a year x 1000
+A.P.I. = -----------------------------------------------------------
+                            Total population
+```
+
+**Bed Net Coverage**\
+Total Number of distributed bed net over three years divided by target population of specific year (the year can be either first year or last year) of specific area.
+
+```         
+                    Total Number of distributed bed net over three years
+Bed Net Coverage = ------------------------------------------------------
+                    target population of specific year of specific area
+```
+
+**Health Facility Coverage**\
+The number of total health workers providing services to 10,000 populations were calculated and used.
+
+```         
+                            Health Worker x 10,000
+Health Facility Coverage = -------------------------
+                                 population
+```
+
+**Population Data**\
+Population data is defined as a set of individuals who share a characteristic or set of these. Population datasets were projected to 2025 from BBS 2011 census population data using BBS growth rate using Geometric method based on Malthus’s population projection method. Only the 2021 datasets were used in the dashboard.
+
+*For more details visit [National Strategic Plan](https://old.dghs.gov.bd/index.php/en/home/5337-draft-malaria-national-strategic-plan-2021-2025-funding-request-2021-2023-and-other-related-documents-for-feedback-comments)*.
+
+*For more details visit [National Malaria Elimination Program (NMEP)](https://nmcp.gov.bd/)*.
+
+# Generate Report {data-navmenu="🛈 About"}
+
+```{r}
+sliderInput("reportyear", "Year", min(data.chart$ReportYear),   max(data.chart$ReportYear),value = range(data.chart$ReportYear),step = 1)
+
+hr()
+
+
+
+radioButtons('format', 'Document format', c('HTML'),
+                                         inline = TRUE)
+wellPanel( downloadButton('downloadReport'))
+
+
+reportdata <- reactive({data.chart[data.chart$ReportYear  >= input$reportyear[1] &
+                           data.chart$ReportYear <= input$reportyear[2],]})
+
+
+
+
+
+output$downloadReport <- downloadHandler(
+  filename = function() {
+    paste('my-report', sep = '.', switch(
+      input$format,  HTML = 'html'
+    ))
+  },
+  
+  content = function(file) {
+    src <- normalizePath('report.Rmd')
+    
+    # temporarily switch to the temp dir, in case you do not have write
+    # permission to the current working directory
+    owd <- setwd(tempdir())
+    on.exit(setwd(owd))
+    file.copy(src, 'report.Rmd', overwrite = TRUE)
+    
+    library(rmarkdown)
+    out <- render('report.Rmd', switch(
+      input$format,
+      HTML = html_document()
+    ))
+    file.rename(out, file)
+  }
+)
+
+```
+
+# Manual {data-navmenu="🛈 About"}
+
+### 
+
+```{r out.width = "100%", out.height="100%"}
+
+knitr::include_graphics("pdf/malaria_API_tracker_manual.pdf")
+
+```
